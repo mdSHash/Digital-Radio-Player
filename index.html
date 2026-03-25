@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Egyptian Radio Stream Player - Listen to live Egyptian radio stations online">
+    <meta name="keywords" content="Egyptian radio, online radio, FM radio, live streaming, Egypt stations">
+    <meta name="author" content="Egypt Radio Stream">
+    <title>Egypt Radio Stream Player</title>
+    
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet">
+    
+    <!-- External CSS -->
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <!-- FLOATING ACTION BUTTONS -->
+    <div class="fab-container">
+        <button id="fab-player" class="fab fab-hidden" title="Player Controls" aria-label="Toggle player">
+            <span class="fab-icon">▶️</span>
+        </button>
+        <button id="fab-data" class="fab" title="Data Usage" aria-label="Toggle data monitor">
+            <span class="fab-icon">📊</span>
+        </button>
+        <button id="fab-timer" class="fab fab-hidden" title="Sleep Timer" aria-label="Toggle sleep timer">
+            <span class="fab-icon">🌙</span>
+            <span class="fab-badge hidden" id="timer-badge">0:00</span>
+        </button>
+    </div>
+
+    <!-- SIDE PANEL -->
+    <aside id="side-panel" class="side-panel">
+        <div class="side-panel-overlay" id="panel-overlay"></div>
+        <div class="side-panel-content">
+            <button class="panel-close" id="panel-close" aria-label="Close panel">✕</button>
+            
+            <!-- Panel sections will be populated dynamically -->
+            <div id="panel-body"></div>
+        </div>
+    </aside>
+
+    <div class="container">
+        <!-- HERO SECTION -->
+        <header class="hero">
+            <div class="hero-tag">LIVE INTERNET RADIO</div>
+            <h1 class="hero-title">Egypt <span class="accent">Radio</span><br>Stream Player</h1>
+            <p class="hero-sub">Radio Browser API · Radio Garden · Egyptian Stations</p>
+        </header>
+
+        <!-- DATA CONSUMPTION DASHBOARD -->
+        <section class="data-dashboard" id="data-dashboard">
+            <div class="data-panel">
+                <div class="data-header">
+                    <span class="status-indicator" id="stream-status"></span>
+                    <span class="data-title">DATA USAGE MONITOR</span>
+                    <span class="live-badge" id="live-badge">IDLE</span>
+                </div>
+                
+                <div class="data-grid">
+                    <div class="data-cell">
+                        <div class="data-value" id="session-data">0 B</div>
+                        <div class="data-label">This Session</div>
+                    </div>
+                    <div class="data-cell">
+                        <div class="data-value" id="listening-time">0s</div>
+                        <div class="data-label">Listening Time</div>
+                    </div>
+                    <div class="data-cell">
+                        <div class="data-value" id="total-data">0 B</div>
+                        <div class="data-label">Total Usage</div>
+                    </div>
+                </div>
+
+                <div class="progress-bar-container">
+                    <div class="progress-bar-fill" id="data-progress-bar" style="width: 0%"></div>
+                </div>
+                <div class="progress-label">
+                    <span id="progress-text">0 MB used this session</span>
+                    <span id="rate-text">0 MB/hr</span>
+                </div>
+
+                <div class="rate-pills">
+                    <div class="rate-pill">
+                        <span class="dot dot-green"></span>
+                        <span id="bitrate-display">128 kbps</span>
+                    </div>
+                    <div class="rate-pill">
+                        <span class="dot dot-green"></span>
+                        <span id="per-min-display">0 KB/min</span>
+                    </div>
+                    <div class="rate-pill">
+                        <span class="dot" id="per-hour-dot"></span>
+                        <span id="per-hour-display">0 MB/hr</span>
+                    </div>
+                    <div class="rate-pill">
+                        <span class="dot" id="per-day-dot"></span>
+                        <span id="per-day-display">0 MB/day</span>
+                    </div>
+                </div>
+
+                <!-- Data Usage Threshold Control -->
+                <div class="data-threshold-section">
+                    <div class="threshold-header">
+                        <span class="threshold-icon">⚠️</span>
+                        <span class="threshold-title">DATA LIMIT ALERT</span>
+                    </div>
+                    <div class="threshold-controls">
+                        <div class="threshold-input-group">
+                            <input type="number" id="data-threshold-input" class="input-threshold" placeholder="100" min="1" max="10000" value="100">
+                            <span class="threshold-unit">MB</span>
+                        </div>
+                        <select id="threshold-action" class="select-threshold">
+                            <option value="alert">Alert Only</option>
+                            <option value="stop">Auto-Stop Stream</option>
+                        </select>
+                        <button id="set-threshold-btn" class="btn-threshold">SET LIMIT</button>
+                        <button id="clear-threshold-btn" class="btn-threshold btn-threshold-clear" style="display: none;">CLEAR</button>
+                    </div>
+                    <div id="threshold-status" class="threshold-status hidden">
+                        <span class="threshold-status-text"></span>
+                    </div>
+                    <div id="threshold-progress" class="threshold-progress hidden">
+                        <div class="threshold-progress-bar">
+                            <div id="threshold-progress-fill" class="threshold-progress-fill" style="width: 0%"></div>
+                        </div>
+                        <div class="threshold-progress-text">
+                            <span id="threshold-used">0 MB</span> / <span id="threshold-limit">0 MB</span>
+                            <span id="threshold-remaining" class="threshold-remaining">(0 MB remaining)</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Real-time Bandwidth Graph -->
+                <div class="bandwidth-graph" id="bandwidth-graph">
+                    <canvas id="bandwidth-canvas" width="700" height="80"></canvas>
+                </div>
+            </div>
+
+            <!-- Session History -->
+            <details class="history-section">
+                <summary class="history-header">📊 Session History</summary>
+                <div id="history-list" class="history-list">
+                    <div class="empty-state-small">No listening history yet</div>
+                </div>
+                <div class="history-footer" id="history-footer" style="display: none;">
+                    <span>Total across all sessions</span>
+                    <span id="history-total" class="history-total">0 B</span>
+                </div>
+                <button id="clear-history-btn" class="btn btn-sm btn-danger mt-2" style="display: none;">
+                    🗑 Clear History
+                </button>
+            </details>
+        </section>
+
+        <!-- SLEEP TIMER SECTION -->
+        <section class="sleep-timer-panel" id="sleep-timer-panel" style="display: none;">
+            <div class="panel-header">
+                <span class="panel-icon">🌙</span>
+                <span class="panel-title">SLEEP TIMER</span>
+            </div>
+            <div class="sleep-timer-presets">
+                <button class="btn-sleep-preset" data-minutes="15">15m</button>
+                <button class="btn-sleep-preset" data-minutes="30">30m</button>
+                <button class="btn-sleep-preset" data-minutes="45">45m</button>
+                <button class="btn-sleep-preset" data-minutes="60">60m</button>
+                <button class="btn-sleep-preset active" data-minutes="0">Off</button>
+            </div>
+            <div class="sleep-timer-custom">
+                <input type="number" id="custom-sleep-minutes" class="input-sleep" placeholder="Custom minutes" min="1" max="720" aria-label="Custom sleep timer minutes">
+                <button id="set-custom-sleep-btn" class="btn-sleep-set">Set</button>
+            </div>
+            <div id="sleep-timer-countdown" class="sleep-timer-countdown hidden">
+                ⏱️ Stream stops in: <span id="sleep-countdown-text">0m 0s</span>
+            </div>
+        </section>
+
+        <!-- TABS NAVIGATION -->
+        <nav class="tabs" role="tablist" aria-label="Main navigation">
+            <button class="tab-btn active" data-tab="favorites" role="tab" aria-selected="true" aria-controls="tab-favorites">
+                ⭐ FAVORITES
+            </button>
+            <button class="tab-btn" data-tab="scanner" role="tab" aria-selected="false" aria-controls="tab-scanner">
+                📡 SCANNER
+            </button>
+            <button class="tab-btn" data-tab="search" role="tab" aria-selected="false" aria-controls="tab-search">
+                🔍 SEARCH
+            </button>
+        </nav>
+
+        <!-- TAB: FAVORITES -->
+        <section id="tab-favorites" class="tab-content active" role="tabpanel" aria-labelledby="favorites-tab">
+            <div class="section-label">Your Favorite Stations</div>
+            <div id="favorites-list">
+                <div class="empty-state">
+                    📻<br>
+                    No favorites yet<br>
+                    Use the scanner or search to discover stations<br>
+                    Click the heart icon to add them here
+                </div>
+            </div>
+        </section>
+
+        <!-- TAB: SCANNER -->
+        <section id="tab-scanner" class="tab-content" role="tabpanel" aria-labelledby="scanner-tab">
+            <div class="section-label">Station Discovery Scanner</div>
+            <div class="alert alert-info" role="status">
+                📡 Scan the Radio Browser API to discover Egyptian radio stations with accurate FM frequencies and metadata.
+            </div>
+
+            <div class="input-group">
+                <label for="scan-country" class="input-label">Country Code</label>
+                <select id="scan-country" class="select" aria-label="Select country to scan">
+                    <option value="EG" selected>Egypt (EG)</option>
+                    <option value="SA">Saudi Arabia (SA)</option>
+                    <option value="AE">UAE (AE)</option>
+                    <option value="MA">Morocco (MA)</option>
+                    <option value="">All Countries</option>
+                </select>
+            </div>
+
+            <div class="input-group">
+                <label for="scan-limit" class="input-label">Maximum Stations to Scan</label>
+                <input type="number" id="scan-limit" class="input" value="20" min="1" max="100" aria-label="Number of stations to scan">
+            </div>
+
+            <button id="start-scan-btn" class="btn btn-primary" aria-label="Start scanning for stations">
+                📡 START SCANNING
+            </button>
+
+            <div id="scan-progress" class="hidden mt-2" role="status" aria-live="polite">
+                <div class="progress-bar">
+                    <div id="scan-progress-fill" class="progress-fill" style="width: 0%" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+                </div>
+                <div id="scan-status" class="loading">Initializing scanner...</div>
+            </div>
+
+            <div id="scan-results" class="mt-3"></div>
+        </section>
+
+        <!-- TAB: SEARCH -->
+        <section id="tab-search" class="tab-content" role="tabpanel" aria-labelledby="search-tab">
+            <div class="section-label">Multi-Criteria Search Engine</div>
+            <div class="alert alert-info" role="status">
+                🔍 Search by station name, FM frequency (e.g., "100.6 FM"), genre, or location within Egypt.
+            </div>
+
+            <div class="input-group">
+                <label for="search-input" class="input-label">Search Query</label>
+                <input type="text" id="search-input" class="input" placeholder="e.g., Nogoum FM, 100.6, Cairo, Music..." aria-label="Search for radio stations">
+            </div>
+
+            <div class="grid-2 mb-2">
+                <div class="input-group">
+                    <label for="search-genre" class="input-label">Filter by Genre</label>
+                    <select id="search-genre" class="select" aria-label="Filter by genre">
+                        <option value="">All Genres</option>
+                        <option value="news">News & Talk</option>
+                        <option value="music">Music</option>
+                        <option value="sports">Sports</option>
+                        <option value="religious">Religious</option>
+                        <option value="classic">Classic</option>
+                    </select>
+                </div>
+
+                <div class="input-group">
+                    <label for="search-country" class="input-label">Country</label>
+                    <select id="search-country" class="select" aria-label="Filter by country">
+                        <option value="EG" selected>Egypt</option>
+                        <option value="">All Countries</option>
+                    </select>
+                </div>
+            </div>
+
+            <button id="search-btn" class="btn btn-primary" aria-label="Search for stations">
+                🔍 SEARCH STATIONS
+            </button>
+
+            <div id="search-results" class="mt-3" role="region" aria-live="polite"></div>
+        </section>
+
+        <!-- INLINE AUDIO PLAYER -->
+        <section id="inline-player" class="inline-player hidden">
+            <div class="player-container">
+                <div class="player-header">
+                    <div class="player-info">
+                        <h2 class="player-station" id="player-station-name">No Station Playing</h2>
+                        <div class="player-url" id="player-station-url" aria-label="Stream URL"></div>
+                    </div>
+                </div>
+
+                <!-- Audio Visualizer -->
+                <div id="visualizer" class="visualizer" role="img" aria-label="Audio visualizer">
+                    <!-- Bars will be generated by JavaScript -->
+                </div>
+
+                <!-- HTML5 Audio Element -->
+                <div class="audio-controls">
+                    <audio id="audio-player" controls preload="none" aria-label="Radio stream player">
+                        Your browser does not support the audio element.
+                    </audio>
+                </div>
+
+                <!-- Player Controls -->
+                <div class="btn-group mt-2">
+                    <button id="stop-btn" class="btn btn-danger" aria-label="Stop playback">
+                        ⏹ STOP
+                    </button>
+                    <button id="refresh-btn" class="btn" aria-label="Refresh stream">
+                        🔄 REFRESH
+                    </button>
+                </div>
+
+                <!-- Volume Control -->
+                <div class="volume-control mt-2">
+                    <label for="volume-slider" class="input-label">Volume</label>
+                    <div class="volume-slider-container">
+                        <button id="mute-btn" class="btn-icon" aria-label="Mute/Unmute">
+                            🔊
+                        </button>
+                        <input type="range" id="volume-slider" class="volume-slider" min="0" max="100" value="80" aria-label="Volume control">
+                        <span id="volume-value" class="volume-value">80%</span>
+                    </div>
+                </div>
+
+                <!-- Stream URL Display -->
+                <details class="stream-url-details mt-2">
+                    <summary class="stream-url-summary">📋 Stream URL (copy)</summary>
+                    <div class="stream-url-code" id="stream-url-code"></div>
+                </details>
+            </div>
+        </section>
+
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <span>Powered by Radio Browser API · Radio Garden</span>
+                <span>Egypt FM · No Antenna · No Noise</span>
+            </div>
+        </div>
+    </footer>
+
+    <!-- External JavaScript -->
+    <script src="app.js"></script>
+</body>
+</html>
