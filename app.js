@@ -265,8 +265,8 @@ function loadHistory() {
     try {
         const stored = localStorage.getItem(CONFIG.STORAGE_KEY_HISTORY);
         AppState.listeningHistory = stored ? JSON.parse(stored) : [];
-        const totalStored = localStorage.getItem(CONFIG.STORAGE_KEY_TOTAL);
-        AppState.totalBytes = totalStored ? parseInt(totalStored) : 0;
+        // Don't load totalBytes from storage - reset on each page load
+        AppState.totalBytes = 0;
     } catch (error) {
         console.error('Error loading history:', error);
         AppState.listeningHistory = [];
@@ -280,7 +280,7 @@ function loadHistory() {
 function saveHistory() {
     try {
         localStorage.setItem(CONFIG.STORAGE_KEY_HISTORY, JSON.stringify(AppState.listeningHistory));
-        localStorage.setItem(CONFIG.STORAGE_KEY_TOTAL, AppState.totalBytes.toString());
+        // Don't save totalBytes - it should reset on page refresh
     } catch (error) {
         console.error('Error saving history:', error);
     }
