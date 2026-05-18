@@ -41,7 +41,13 @@ const AppState = {
     // Data threshold
     dataThreshold: null,
     dataThresholdAction: 'alert',
-    dataThresholdReached: false
+    dataThresholdReached: false,
+    // Async safety
+    activeAbortControllers: new Set(),
+    audioEventListeners: new Map(),
+    playbackLock: false,
+    currentPlaybackToken: null,
+    debounceTimeouts: new Map()
 };
 
 // ============================================
@@ -128,6 +134,45 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => document.querySelectorAll(selector);
 
 /**
+ * Sanitize HTML to prevent XSS attacks
+ */
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+/**
+ * Sanitize URL to prevent javascript: and data: URIs
+ */
+function sanitizeUrl(url) {
+    if (!url) return '';
+    const urlStr = String(url).trim().toLowerCase();
+    if (urlStr.startsWith('javascript:') || urlStr.startsWith('data:') || urlStr.startsWith('vbscript:')) {
+        return '';
+    }
+    return String(url).trim();
+}
+
+/**
+ * Validate and sanitize numeric input
+ */
+function sanitizeNumber(value, min = 0, max = Infinity) {
+    const num = parseInt(value, 10);
+    if (isNaN(num)) return min;
+    return Math.max(min, Math.min(max, num));
+}
+
+/**
+ * Validate and sanitize text input
+ */
+function sanitizeText(text, maxLength = 1000) {
+    if (!text) return '';
+    return String(text).trim().slice(0, maxLength);
+}
+
+/**
  * Show alert message
  */
 function showAlert(message, type = 'info') {
@@ -139,18 +184,30 @@ function showAlert(message, type = 'info') {
 }
 
 /**
- * Debounce function for search input
+ * Debounce function for search input with cleanup
  */
-function debounce(func, wait) {
-    let timeout;
+function debounce(func, wait, key = 'default') {
     return function executedFunction(...args) {
-        const later = () => {
-            clearTimeout(timeout);
+        const existingTimeout = AppState.debounceTimeouts.get(key);
+        if (existingTimeout) {
+            clearTimeout(existingTimeout);
+        }
+        
+        const timeout = setTimeout(() => {
+            AppState.debounceTimeouts.delete(key);
             func(...args);
-        };
-        clearTimeout(timeout);
-        timeout = setTimeout(later, wait);
+        }, wait);
+        
+        AppState.debounceTimeouts.set(key, timeout);
     };
+}
+
+/**
+ * Clear all debounce timeouts
+ */
+function clearAllDebounceTimeouts() {
+    AppState.debounceTimeouts.forEach(timeout => clearTimeout(timeout));
+    AppState.debounceTimeouts.clear();
 }
 
 /**
@@ -292,6 +349,7 @@ function saveHistory() {
 function startDataMonitoring() {
     if (AppState.dataMonitorInterval) {
         clearInterval(AppState.dataMonitorInterval);
+        AppState.dataMonitorInterval = null;
     }
     
     AppState.sessionStartTime = Date.now();
@@ -303,7 +361,10 @@ function startDataMonitoring() {
     initBandwidthCanvas();
     
     // Update every second
-    AppState.dataMonitorInterval = setInterval(updateDataDashboard, CONFIG.DATA_UPDATE_INTERVAL);
+    AppState.dataMonitorInterval = setInterval(() => {
+        updateDataDashboard();
+        checkDataThreshold();
+    }, CONFIG.DATA_UPDATE_INTERVAL);
     
     // Update UI immediately
     updateDataDashboard();
@@ -422,6 +483,9 @@ function updateDataDashboard() {
     
     // Update bandwidth graph
     drawBandwidthGraph();
+    
+    // Check data threshold
+    checkDataThreshold();
 }
 
 /**
@@ -520,13 +584,28 @@ function renderHistory() {
         return;
     }
     
-    historyList.innerHTML = AppState.listeningHistory.map(session => `
-        <div class="history-row">
-            <span class="history-name">${session.name}</span>
-            <span class="history-time">${formatTime(session.duration)} · ${session.stoppedAt}</span>
-            <span class="history-data">${formatBytes(session.bytes)}</span>
-        </div>
-    `).join('');
+    historyList.innerHTML = '';
+    AppState.listeningHistory.forEach(session => {
+        const historyRow = document.createElement('div');
+        historyRow.className = 'history-row';
+        
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'history-name';
+        nameSpan.textContent = session.name;
+        
+        const timeSpan = document.createElement('span');
+        timeSpan.className = 'history-time';
+        timeSpan.textContent = `${formatTime(session.duration)} · ${session.stoppedAt}`;
+        
+        const dataSpan = document.createElement('span');
+        dataSpan.className = 'history-data';
+        dataSpan.textContent = formatBytes(session.bytes);
+        
+        historyRow.appendChild(nameSpan);
+        historyRow.appendChild(timeSpan);
+        historyRow.appendChild(dataSpan);
+        historyList.appendChild(historyRow);
+    });
     
     // Update footer
     const totalHistoryBytes = AppState.listeningHistory.reduce((sum, s) => sum + s.bytes, 0);
@@ -649,44 +728,96 @@ function createStationCard(station, showFavoriteBtn = true) {
     const isCurrentlyPlaying = AppState.currentStation && AppState.currentStation.url === station.url;
     const isFav = isFavorite(station.url);
     const countryFlag = getCountryFlag(station.country);
-    const locationText = station.state ? `${station.state}, ${station.country}` : station.country;
+    const locationText = station.state ? `${escapeHtml(station.state)}, ${escapeHtml(station.country)}` : escapeHtml(station.country);
 
     const card = document.createElement('div');
     card.className = `station-card ${isCurrentlyPlaying ? 'playing' : ''}`;
 
-    card.innerHTML = `
-        <div class="station-name">
-            ${countryFlag} ${station.name}
-            ${station.country && station.country !== 'EG' ? `<span class="location-badge">${locationText}</span>` : ''}
-        </div>
-        <div class="station-meta">
-            <span class="freq">${station.frequency || 'Web Stream'}</span>
-            ${station.genre ? `<span class="genre">${station.genre}</span>` : ''}
-            ${station.bitrate ? `<span>${station.bitrate} kbps</span>` : ''}
-            ${station.codec ? `<span>${station.codec}</span>` : ''}
-        </div>
-        ${isCurrentlyPlaying ? '<div class="station-playing-badge"><span class="blink-dot"></span>LIVE</div>' : ''}
-        <div class="btn-group">
-            <button class="btn play-btn" data-url="${station.url}" data-name="${station.name}" data-bitrate="${station.bitrate || 128}">
-                ${isCurrentlyPlaying ? '▶ PLAYING' : '▶ PLAY'}
-            </button>
-            ${showFavoriteBtn ? `
-                <button class="btn ${isFav ? 'btn-success' : ''} favorite-btn">
-                    ${isFav ? '✓ FAVORITED' : '♥ ADD TO FAVORITES'}
-                </button>
-            ` : `
-                <button class="btn btn-danger remove-btn" data-url="${station.url}">
-                    🗑 REMOVE
-                </button>
-            `}
-        </div>
-    `;
-
-    // Store station data on the button element
-    if (showFavoriteBtn) {
-        const favBtn = card.querySelector('.favorite-btn');
-        favBtn._stationData = station;
+    // Create station name div
+    const stationNameDiv = document.createElement('div');
+    stationNameDiv.className = 'station-name';
+    stationNameDiv.textContent = `${countryFlag} ${station.name}`;
+    
+    if (station.country && station.country !== 'EG') {
+        const locationBadge = document.createElement('span');
+        locationBadge.className = 'location-badge';
+        locationBadge.textContent = locationText;
+        stationNameDiv.appendChild(document.createTextNode(' '));
+        stationNameDiv.appendChild(locationBadge);
     }
+    
+    // Create station meta div
+    const stationMetaDiv = document.createElement('div');
+    stationMetaDiv.className = 'station-meta';
+    
+    const freqSpan = document.createElement('span');
+    freqSpan.className = 'freq';
+    freqSpan.textContent = station.frequency || 'Web Stream';
+    stationMetaDiv.appendChild(freqSpan);
+    
+    if (station.genre) {
+        const genreSpan = document.createElement('span');
+        genreSpan.className = 'genre';
+        genreSpan.textContent = station.genre;
+        stationMetaDiv.appendChild(genreSpan);
+    }
+    
+    if (station.bitrate) {
+        const bitrateSpan = document.createElement('span');
+        bitrateSpan.textContent = `${station.bitrate} kbps`;
+        stationMetaDiv.appendChild(bitrateSpan);
+    }
+    
+    if (station.codec) {
+        const codecSpan = document.createElement('span');
+        codecSpan.textContent = station.codec;
+        stationMetaDiv.appendChild(codecSpan);
+    }
+    
+    card.appendChild(stationNameDiv);
+    card.appendChild(stationMetaDiv);
+    
+    // Add playing badge if currently playing
+    if (isCurrentlyPlaying) {
+        const playingBadge = document.createElement('div');
+        playingBadge.className = 'station-playing-badge';
+        const blinkDot = document.createElement('span');
+        blinkDot.className = 'blink-dot';
+        playingBadge.appendChild(blinkDot);
+        playingBadge.appendChild(document.createTextNode('LIVE'));
+        card.appendChild(playingBadge);
+    }
+    
+    // Create button group
+    const btnGroup = document.createElement('div');
+    btnGroup.className = 'btn-group';
+    
+    // Play button
+    const playBtn = document.createElement('button');
+    playBtn.className = 'btn play-btn';
+    playBtn.setAttribute('data-url', sanitizeUrl(station.url));
+    playBtn.setAttribute('data-name', station.name);
+    playBtn.setAttribute('data-bitrate', station.bitrate || 128);
+    playBtn.textContent = isCurrentlyPlaying ? '▶ PLAYING' : '▶ PLAY';
+    btnGroup.appendChild(playBtn);
+    
+    // Favorite or Remove button
+    if (showFavoriteBtn) {
+        const favBtn = document.createElement('button');
+        favBtn.className = `btn ${isFav ? 'btn-success' : ''}`;
+        favBtn.className += ' favorite-btn';
+        favBtn.textContent = isFav ? '✓ FAVORITED' : '♥ ADD TO FAVORITES';
+        favBtn._stationData = station;
+        btnGroup.appendChild(favBtn);
+    } else {
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'btn btn-danger remove-btn';
+        removeBtn.setAttribute('data-url', sanitizeUrl(station.url));
+        removeBtn.textContent = '🗑 REMOVE';
+        btnGroup.appendChild(removeBtn);
+    }
+    
+    card.appendChild(btnGroup);
 
     return card;
 }
@@ -824,86 +955,135 @@ function initWebAudioAPI() {
 }
 
 /**
- * Play radio station
+ * Remove audio event listeners
  */
-function playStation(station) {
-    // Stop previous session if any
-    if (AppState.isPlaying) {
-        stopDataMonitoring();
+function removeAudioEventListeners() {
+    const audio = $('#audio-player');
+    if (!audio) return;
+    
+    AppState.audioEventListeners.forEach((listener, event) => {
+        audio.removeEventListener(event, listener);
+    });
+    AppState.audioEventListeners.clear();
+}
+
+/**
+ * Play radio station with race condition protection
+ */
+async function playStation(station) {
+    // Prevent multiple simultaneous play calls
+    if (AppState.playbackLock) {
+        console.log('Playback operation already in progress');
+        return;
     }
     
-    AppState.currentStation = station;
-    AppState.currentBitrate = station.bitrate || 128;
-    AppState.isPlaying = true; // Set immediately so FABs appear
+    AppState.playbackLock = true;
+    const playbackToken = Date.now();
+    AppState.currentPlaybackToken = playbackToken;
     
-    const audio = $('#audio-player');
-    const visualizer = $('#visualizer');
+    try {
+        // Stop previous session if any
+        if (AppState.isPlaying) {
+            stopDataMonitoring();
+        }
+        
+        // Remove old event listeners
+        removeAudioEventListeners();
+        
+        AppState.currentStation = station;
+        AppState.currentBitrate = station.bitrate || 128;
+        AppState.isPlaying = true;
+        
+        const audio = $('#audio-player');
+        const visualizer = $('#visualizer');
 
-    // Update UI with correct country flag
-    const countryCode = station.country || station.countrycode || 'EG';
-    $('#player-station-name').textContent = `${getCountryFlag(countryCode)} ${station.name}`;
-    $('#player-station-url').textContent = station.url;
-    $('#stream-url-code').textContent = station.url;
-    
-    // Show inline player
-    $('#inline-player').classList.remove('hidden');
-    
-    // Update FAB visibility (player and timer FABs will appear)
-    updateFABVisibility();
+        // Update UI with correct country flag
+        const countryCode = station.country || station.countrycode || 'EG';
+        const playerStationName = $('#player-station-name');
+        playerStationName.textContent = `${getCountryFlag(countryCode)} ${station.name}`;
+        
+        const playerStationUrl = $('#player-station-url');
+        playerStationUrl.textContent = sanitizeUrl(station.url);
+        
+        const streamUrlCode = $('#stream-url-code');
+        streamUrlCode.textContent = sanitizeUrl(station.url);
+        
+        // Show inline player
+        $('#inline-player').classList.remove('hidden');
+        
+        // Update FAB visibility
+        updateFABVisibility();
 
-    // Set audio source and play
-    audio.src = station.url;
-    audio.volume = AppState.currentVolume;
-    audio.load();
-    
-    // Play with better error handling
-    const playPromise = audio.play();
-    
-    if (playPromise !== undefined) {
-        playPromise.then(() => {
+        // Set audio source
+        audio.src = sanitizeUrl(station.url);
+        audio.volume = AppState.currentVolume;
+        audio.load();
+        
+        // Add event listeners with tracking
+        const onPlay = () => {
+            if (AppState.currentPlaybackToken !== playbackToken) return;
+            visualizer.classList.add('playing');
+            AppState.isPlaying = true;
+            console.log('Playback started');
+            if (!AppState.dataMonitorInterval) {
+                startDataMonitoring();
+            }
+        };
+        
+        const onPause = () => {
+            visualizer.classList.remove('playing');
+            AppState.isPlaying = false;
+            stopDataMonitoring();
+        };
+        
+        const onError = () => {
+            if (AppState.currentPlaybackToken !== playbackToken) return;
+            visualizer.classList.remove('playing');
+            AppState.isPlaying = false;
+            stopDataMonitoring();
+            console.error('Stream error for:', station.url);
+            alert('Stream failed to load. The station may be offline.');
+        };
+        
+        const onWaiting = () => {
+            console.log('Buffering...');
+        };
+        
+        const onCanPlay = () => {
+            console.log('Ready to play');
+        };
+        
+        // Store listeners for cleanup
+        AppState.audioEventListeners.set('play', onPlay);
+        AppState.audioEventListeners.set('pause', onPause);
+        AppState.audioEventListeners.set('error', onError);
+        AppState.audioEventListeners.set('waiting', onWaiting);
+        AppState.audioEventListeners.set('canplay', onCanPlay);
+        
+        // Attach listeners
+        audio.addEventListener('play', onPlay);
+        audio.addEventListener('pause', onPause);
+        audio.addEventListener('error', onError);
+        audio.addEventListener('waiting', onWaiting);
+        audio.addEventListener('canplay', onCanPlay);
+        
+        // Play with error handling
+        try {
+            await audio.play();
             console.log('Playing:', station.name);
-            // Start data monitoring when playback actually starts
             startDataMonitoring();
-        }).catch(error => {
+        } catch (error) {
             console.error('Playback error:', error);
             alert('Failed to play station. The stream may be offline or blocked by CORS policy.\n\nTry another station or check your internet connection.');
-        });
-    }
-
-    // Audio event listeners
-    audio.onplay = () => {
-        visualizer.classList.add('playing');
-        AppState.isPlaying = true;
-        console.log('Playback started');
-        if (!AppState.dataMonitorInterval) {
-            startDataMonitoring();
+            AppState.isPlaying = false;
         }
-    };
-
-    audio.onpause = () => {
-        visualizer.classList.remove('playing');
-        AppState.isPlaying = false;
-        stopDataMonitoring();
-    };
-
-    audio.onerror = () => {
-        visualizer.classList.remove('playing');
-        AppState.isPlaying = false;
-        stopDataMonitoring();
-        console.error('Stream error for:', station.url);
-        alert('Stream failed to load. The station may be offline.');
-    };
-
-    audio.onwaiting = () => {
-        console.log('Buffering...');
-    };
-
-    audio.oncanplay = () => {
-        console.log('Ready to play');
-    };
-    
-    // Update favorites display
-    renderFavorites();
+        
+        // Update favorites display
+        renderFavorites();
+        
+    } finally {
+        AppState.playbackLock = false;
+    }
 }
 
 /**
@@ -911,6 +1091,9 @@ function playStation(station) {
  */
 function stopPlayback() {
     const audio = $('#audio-player');
+    
+    // Invalidate current playback token
+    AppState.currentPlaybackToken = null;
     
     // Stop data monitoring and save session
     stopDataMonitoring();
@@ -921,7 +1104,6 @@ function stopPlayback() {
         AppState.sleepTimerInterval = null;
         AppState.sleepTimerEnd = null;
         $('#sleep-timer-countdown').classList.add('hidden');
-        // Reset active button
         document.querySelectorAll('.btn-sleep-preset').forEach(btn => {
             btn.classList.remove('active');
             if (btn.dataset.minutes === '0') {
@@ -929,6 +1111,9 @@ function stopPlayback() {
             }
         });
     }
+    
+    // Remove event listeners
+    removeAudioEventListeners();
     
     audio.pause();
     audio.src = '';
@@ -992,10 +1177,10 @@ function setDataThreshold() {
         return;
     }
     
-    const thresholdMB = parseInt(thresholdInput.value);
+    const thresholdMB = sanitizeNumber(thresholdInput.value, 1, 100000);
     console.log('Threshold value:', thresholdMB);
     
-    if (!thresholdMB || thresholdMB < 1) {
+    if (thresholdMB < 1) {
         alert('Please enter a valid data limit (minimum 1 MB)');
         return;
     }
@@ -1489,7 +1674,7 @@ function renderScanResults(stations) {
  * Search for radio stations
  */
 async function searchStations() {
-    const query = $('#search-input').value.trim();
+    const query = sanitizeText($('#search-input').value, 200);
     const genre = $('#search-genre').value;
     const country = $('#search-country').value;
     const resultsContainer = $('#search-results');
@@ -1501,11 +1686,16 @@ async function searchStations() {
         return;
     }
 
+    // Cancel previous search requests
+    cancelActiveRequests();
+
+    const abortController = new AbortController();
+    AppState.activeAbortControllers.add(abortController);
+
     searchBtn.disabled = true;
     resultsContainer.innerHTML = '<div class="loading"><div class="spinner"></div>Searching stations...</div>';
 
     try {
-        // Build search parameters
         const params = new URLSearchParams({
             name: query,
             limit: 20,
@@ -1522,13 +1712,16 @@ async function searchStations() {
             params.append('tag', genre);
         }
 
-        // Try multiple mirrors
         let stations = [];
         for (const mirror of CONFIG.RADIO_BROWSER_MIRRORS) {
+            if (abortController.signal.aborted) {
+                throw new Error('Request cancelled');
+            }
+            
             try {
                 const response = await fetch(`${mirror}/stations/search?${params}`, {
                     headers: { 'User-Agent': CONFIG.USER_AGENT },
-                    signal: AbortSignal.timeout(CONFIG.SCAN_TIMEOUT)
+                    signal: abortController.signal
                 });
                 
                 if (response.ok) {
@@ -1536,15 +1729,20 @@ async function searchStations() {
                     break;
                 }
             } catch (error) {
+                if (error.name === 'AbortError') {
+                    throw error;
+                }
                 console.warn(`Mirror ${mirror} failed:`, error);
             }
         }
 
-        // Deduplicate search results
         const seenUrls = new Set();
         const processedStations = [];
         
         for (const station of stations) {
+            if (abortController.signal.aborted) {
+                throw new Error('Request cancelled');
+            }
             const normalized = normalizeStreamUrl(station.url_resolved || station.url);
             if (!seenUrls.has(normalized)) {
                 seenUrls.add(normalized);
@@ -1552,13 +1750,20 @@ async function searchStations() {
             }
         }
         
-        renderSearchResults(processedStations, query);
+        if (!abortController.signal.aborted) {
+            renderSearchResults(processedStations, query);
+        }
 
     } catch (error) {
-        console.error('Search error:', error);
-        resultsContainer.innerHTML = '';
-        resultsContainer.appendChild(showAlert('Search failed. Please try again.', 'error'));
+        if (error.name === 'AbortError') {
+            console.log('Search cancelled');
+        } else {
+            console.error('Search error:', error);
+            resultsContainer.innerHTML = '';
+            resultsContainer.appendChild(showAlert('Search failed. Please try again.', 'error'));
+        }
     } finally {
+        AppState.activeAbortControllers.delete(abortController);
         searchBtn.disabled = false;
     }
 }
@@ -1568,7 +1773,12 @@ async function searchStations() {
  */
 function renderSearchResults(stations, query) {
     const container = $('#search-results');
-    container.innerHTML = `<div class="section-label">${stations.length} Results for "${query}"</div>`;
+    container.innerHTML = '';
+    
+    const sectionLabel = document.createElement('div');
+    sectionLabel.className = 'section-label';
+    sectionLabel.textContent = `${stations.length} Results for "${sanitizeText(query, 100)}"`;
+    container.appendChild(sectionLabel);
 
     if (stations.length === 0) {
         container.appendChild(showAlert('No stations found. Try a different search term.', 'warning'));
@@ -1581,6 +1791,49 @@ function renderSearchResults(stations, query) {
     });
 
     attachCardEventListeners(container);
+}
+
+// ============================================
+// CLEANUP & RESOURCE MANAGEMENT
+// ============================================
+
+/**
+ * Cleanup all resources
+ */
+function cleanupResources() {
+    console.log('Cleaning up resources...');
+    
+    // Stop playback
+    if (AppState.isPlaying) {
+        stopPlayback();
+    }
+    
+    // Clear all intervals
+    if (AppState.dataMonitorInterval) {
+        clearInterval(AppState.dataMonitorInterval);
+        AppState.dataMonitorInterval = null;
+    }
+    
+    if (AppState.sleepTimerInterval) {
+        clearInterval(AppState.sleepTimerInterval);
+        AppState.sleepTimerInterval = null;
+    }
+    
+    // Clear all debounce timeouts
+    clearAllDebounceTimeouts();
+    
+    // Cancel all active requests
+    cancelActiveRequests();
+    
+    // Remove audio event listeners
+    removeAudioEventListeners();
+    
+    // Suspend audio context
+    if (AppState.audioContext) {
+        AppState.audioContext.suspend();
+    }
+    
+    console.log('Cleanup complete');
 }
 
 // ============================================
@@ -1636,7 +1889,7 @@ function initApp() {
     });
 
     // Real-time search with debounce
-    const debouncedSearch = debounce(searchStations, CONFIG.SEARCH_DEBOUNCE);
+    const debouncedSearch = debounce(searchStations, CONFIG.SEARCH_DEBOUNCE, 'search');
     $('#search-input').addEventListener('input', debouncedSearch);
 
     // Player controls
@@ -1665,8 +1918,8 @@ function initApp() {
     
     // Custom sleep timer
     $('#set-custom-sleep-btn').addEventListener('click', () => {
-        const customMinutes = parseInt($('#custom-sleep-minutes').value);
-        if (customMinutes && customMinutes > 0 && customMinutes <= 720) {
+        const customMinutes = sanitizeNumber($('#custom-sleep-minutes').value, 1, 720);
+        if (customMinutes >= 1 && customMinutes <= 720) {
             setSleepTimer(customMinutes);
             $('#custom-sleep-minutes').value = '';
         } else {
@@ -1686,6 +1939,10 @@ function initApp() {
 
     // Initialize volume
     updateVolume(80);
+    
+    // Setup cleanup on page unload
+    window.addEventListener('beforeunload', cleanupResources);
+    window.addEventListener('unload', cleanupResources);
 
     console.log('Application initialized successfully');
 }
@@ -1710,13 +1967,29 @@ document.addEventListener('visibilitychange', () => {
     }
 });
 
-// Handle errors globally
+// Handle errors globally with better logging
 window.addEventListener('error', (event) => {
     console.error('Global error:', event.error);
+    if (event.error && event.error.stack) {
+        console.error('Stack trace:', event.error.stack);
+    }
 });
 
+// Handle unhandled promise rejections
 window.addEventListener('unhandledrejection', (event) => {
     console.error('Unhandled promise rejection:', event.reason);
+    
+    // Prevent default handling for AbortError (expected when cancelling requests)
+    if (event.reason && event.reason.name === 'AbortError') {
+        event.preventDefault();
+        console.log('Request was cancelled (expected behavior)');
+        return;
+    }
+    
+    // Log stack trace if available
+    if (event.reason && event.reason.stack) {
+        console.error('Stack trace:', event.reason.stack);
+    }
 });
 
 console.log('Egypt Radio Stream Player loaded');
